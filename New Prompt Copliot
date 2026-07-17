@@ -1,0 +1,97 @@
+# IMS — GitHub Copilot Chat Prompts
+### Role + Task + Context + Output format, per service
+### Reflects the Employee / Manager / Admin / Service role model
+
+---
+
+## Global Context (prepend mentally to every prompt below)
+
+- Spring Boot 3.5.x, Spring Cloud 2025.0.3, Java 25, virtual threads enabled.
+- Roles: `ROLE_EMPLOYEE`, `ROLE_MANAGER`, `ROLE_ADMIN`, `ROLE_SERVICE`. Manager and Admin permissions are additive over Employee.
+- JWT is validated only at the API Gateway. Downstream services trust `X-User-Id` and `X-User-Role` headers via a shared `HeaderAuthenticationFilter`.
+- Service-to-service calls use `X-Internal-Service-Token` and present as `ROLE_SERVICE`.
+- Hard invariant: only `ROLE_MANAGER` or `ROLE_ADMIN` may approve a purchase order. `ROLE_EMPLOYEE` and `ROLE_SERVICE` must never be able to.
+
+---
+
+## 1. Identity Service (8081)
+
+**Role:** You are a senior Spring Boot engineer building an internal authentication service.
+
+**Task:** Scaffold the Identity Service, including a `User` entity with an enum `Role { EMPLOYEE, MANAGER, ADMIN }`, registration and login endpoints, JWT issuance, and password hashing with BCrypt. Only `ROLE_ADMIN` may create, update, or deactivate user accounts.
+
+**Context:** This is the only service that validates credentials and issues JWTs. All other services trust headers injected by the Gateway, not the JWT itself. `ROLE_SERVICE` accounts are provisioned separately and are not created through this API.
+
+**Output format:** Full Spring Boot project structure (entity, repository, service, controller, DTOs, `SecurityConfig`), with role checks enforced via method-level `@PreAuthorize` or equivalent, plus a short README of endpoints.
+
+---
+
+## 2. Catalog Service (8082)
+
+**Role:** You are a senior Spring Boot engineer building a product catalog microservice.
+
+**Task:** Scaffold the Catalog Service with a `Product` entity (FK to a single Supplier, `ProductType` enum instead of a Category entity, stock quantity as source of truth — no `InStock` boolean). Implement CRUD endpoints. `ROLE_EMPLOYEE`, `ROLE_MANAGER`, and `ROLE_ADMIN` may create/update products; all authenticated roles may read.
+
+**Context:** Validates the referenced supplier exists by calling Supplier Service via `RestTemplate` with `@LoadBalanced`, using the internal service token for that outbound call. Reads `X-User-Id` / `X-User-Role` via `HeaderAuthenticationFilter`.
+
+**Output format:** Full project structure (entity, repository, service, controller, DTOs, feign/RestTemplate client to Supplier Service), with role checks per endpoint clearly commented.
+
+---
+
+## 3. Supplier Service (8083)
+
+**Role:** You are a senior Spring Boot engineer building a supplier management microservice.
+
+**Task:** Scaffold the Supplier Service with a `Supplier` entity and CRUD endpoints. `ROLE_MANAGER` and `ROLE_ADMIN` may create/update suppliers; only `ROLE_ADMIN` may modify payment terms fields. `ROLE_EMPLOYEE` has read-only access.
+
+**Context:** Consumed by Catalog Service (product-supplier FK validation) and Procurement Service (purchase order supplier lookups) via internal service-to-service calls.
+
+**Output format:** Full project structure with field-level authorization (payment terms restricted to Admin) and a short README documenting which roles can hit which endpoints.
+
+---
+
+## 4. Inventory Service (8084)
+
+**Role:** You are a senior Spring Boot engineer building a stock management microservice.
+
+**Task:** Scaffold the Inventory Service with a `StockAdjustment` entity (reason-code enum, `manager_id` audit FK — populate from `X-User-Id` regardless of the actor's exact role), and endpoints for adjusting and viewing stock. `ROLE_EMPLOYEE`, `ROLE_MANAGER`, `ROLE_ADMIN` may adjust stock.
+
+**Context:** When stock falls below a reorder threshold, calls Procurement Service via `RestTemplate` with `@LoadBalanced`, using `X-Internal-Service-Token` (`ROLE_SERVICE`) — this triggered call must never itself approve anything, only create a `PENDING_APPROVAL` purchase order.
+
+**Output format:** Full project structure (entity, repository, service, controller, DTOs, RestTemplate client to Procurement Service), with the reorder-trigger logic isolated in its own service class.
+
+---
+
+## 5. Procurement Service (8085)
+
+**Role:** You are a senior Spring Boot engineer building a purchase-order and payments microservice.
+
+**Task:** Scaffold the Procurement Service with a `PurchaseOrder` entity (`approved_by`, `approved_at`, lifecycle including `PENDING_APPROVAL` → `SENT`) and a dedicated `SupplierPayment` entity for partial payments. `ROLE_EMPLOYEE`, `ROLE_MANAGER`, `ROLE_ADMIN` may create POs. **Only `ROLE_MANAGER` or `ROLE_ADMIN` may approve a PO — enforce this in the service layer, not just the controller, and explicitly reject `ROLE_EMPLOYEE` and `ROLE_SERVICE`.**
+
+**Context:** This service enforces the system's core security invariant. Even internal calls authenticated as `ROLE_SERVICE` (e.g., from Inventory Service's reorder trigger) must only be able to create POs in `PENDING_APPROVAL`, never approve them.
+
+**Output format:** Full project structure with the approval endpoint's authorization check written out explicitly (not just annotation-based) and a unit test asserting `ROLE_EMPLOYEE` and `ROLE_SERVICE` both receive 403 on the approval endpoint.
+
+---
+
+## 6. Chatbot Service (8086)
+
+**Role:** You are a senior Spring Boot engineer integrating an AI assistant via Spring AI.
+
+**Task:** Scaffold the Chatbot Service using Spring AI 1.1.x with Anthropic Claude and tool-calling, exposing tools that call Inventory, Catalog, and Procurement services. Tool calls to other services use `X-Internal-Service-Token` (`ROLE_SERVICE`). The chatbot itself must respect the calling user's role — if the authenticated user is `ROLE_EMPLOYEE`, any tool call that would approve a PO must be rejected before it reaches Procurement Service.
+
+**Context:** No historical sales data is used — this is a live, tool-calling assistant, not a forecasting model.
+
+**Output format:** Full project structure (Spring AI config, tool/function definitions, controller), with a clear comment block showing where user-role gating happens before a tool executes.
+
+---
+
+## 7. Thymeleaf BFF Frontend (8090)
+
+**Role:** You are a senior Spring Boot engineer building a server-rendered frontend.
+
+**Task:** Scaffold the Thymeleaf BFF with login, dashboard, product, inventory, and purchase-order views. Conditionally render UI elements (e.g., "Approve" buttons) based on the logged-in user's role.
+
+**Context:** Talks to the API Gateway (not directly to backend services), so it receives and stores the JWT from Identity Service via the Gateway's auth flow.
+
+**Output format:** Full project structure (controllers, Thymeleaf templates, static assets), with role-based UI conditionals using Thymeleaf's `sec:authorize` (or equivalent) clearly marked.
